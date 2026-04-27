@@ -111,7 +111,7 @@ class GithubCallbackView(APIView):
         # Web flow — redirect to frontend with tokens in URL
         # Frontend will store in HTTP-only cookie
         frontend_url = (
-            f"{settings.FRONTEND_URL}/auth/callback"
+            f"{settings.FRONTEND_URL}/index.html"
             f"?access_token={tokens['access_token']}"
             f"&refresh_token={tokens['refresh_token']}"
         )
