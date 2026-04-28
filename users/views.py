@@ -14,16 +14,39 @@ from .middleware import get_user_from_request
 from django_ratelimit.decorators import ratelimit
 from django.utils.decorators import method_decorator
 
+from django.core.cache import cache
+from django.http import JsonResponse
+import time
+
+
+def check_rate_limit(request, key_prefix, limit, window=60):
+    """
+    Simple rate limiter using Django's cache.
+    Returns True if rate limit exceeded.
+    """
+    ip = request.META.get(
+        "HTTP_X_FORWARDED_FOR", request.META.get("REMOTE_ADDR", "unknown")
+    )
+    cache_key = f"ratelimit:{key_prefix}:{ip}"
+
+    requests_made = cache.get(cache_key, 0)
+    if requests_made >= limit:
+        return True
+
+    cache.set(cache_key, requests_made + 1, window)
+    return False
+
 
 @method_decorator(ratelimit(key="ip", rate="10/m", block=True), name="get")
 class GithubLoginView(APIView):
-    """
-    GET /auth/github
-    Redirects the user to GitHub's OAuth authorization page.
-    The state parameter prevents CSRF attacks on the OAuth flow.
-    """
-
     def get(self, request):
+        # Rate limit: 10 requests per minute
+        if check_rate_limit(request, "auth", 10):
+            return Response(
+                {"status": "error", "message": "Too many requests"},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         state = request.query_params.get("state", "")
         code_challenge = request.query_params.get("code_challenge", "")
         code_challenge_method = request.query_params.get(
@@ -50,19 +73,32 @@ class GithubLoginView(APIView):
 class GithubCallbackView(APIView):
     """
     GET /auth/github/callback
-    GitHub redirects here after user authenticates.
-    We exchange the code for tokens and redirect to frontend.
+    Handles OAuth callback from GitHub.
+    Validates state and PKCE before exchanging code.
     """
+
+    if check_rate_limit(request, "auth", 10):
+        return Response(
+            {"status": "error", "message": "Too many requests"},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
     def get(self, request):
         code = request.query_params.get("code")
-        state = request.query_params.get("state", "")
+        state = request.query_params.get("state")
         code_verifier = request.query_params.get("code_verifier")
         is_cli = request.query_params.get("cli") == "true"
 
+        # Validate required parameters
         if not code:
             return Response(
                 {"status": "error", "message": "No code provided"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not state:
+            return Response(
+                {"status": "error", "message": "Missing state parameter"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -71,7 +107,7 @@ class GithubCallbackView(APIView):
         if error:
             return Response(
                 {"status": "error", "message": error},
-                status=status.HTTP_502_BAD_GATEWAY,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         # Get user info from GitHub
@@ -108,8 +144,7 @@ class GithubCallbackView(APIView):
                 }
             )
 
-        # Web flow — redirect to frontend with tokens in URL
-        # Frontend will store in HTTP-only cookie
+        # Web flow — redirect to frontend with tokens
         frontend_url = (
             f"{settings.FRONTEND_URL}/index.html"
             f"?access_token={tokens['access_token']}"
@@ -125,6 +160,12 @@ class RefreshTokenView(APIView):
     Exchange a refresh token for a new access + refresh token pair.
     The old refresh token is immediately invalidated (token rotation).
     """
+
+    if check_rate_limit(request, "auth", 10):
+        return Response(
+            {"status": "error", "message": "Too many requests"},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
     def post(self, request):
         refresh_token_value = request.data.get("refresh_token")
@@ -178,19 +219,25 @@ class LogoutView(APIView):
     """
     POST /auth/logout
     Invalidates the refresh token server-side.
+    Requires refresh_token in body.
     """
 
     def post(self, request):
         refresh_token_value = request.data.get("refresh_token")
 
-        if refresh_token_value:
-            RefreshToken.objects.filter(token=refresh_token_value).delete()
+        if not refresh_token_value:
+            return Response(
+                {"status": "error", "message": "refresh_token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted, _ = RefreshToken.objects.filter(token=refresh_token_value).delete()
 
         return Response({"status": "success", "message": "Logged out successfully"})
 
 
 class WhoAmIView(APIView):
-    """
+    """ "
     GET /auth/whoami
     Returns the currently authenticated user's info.
     Used by the CLI's `insighta whoami` command.

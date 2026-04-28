@@ -79,3 +79,10 @@ REFRESH_TOKEN_EXPIRY_MINUTES = 5
 
 # Frontend URL
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# Cache for rate limiting
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+}
