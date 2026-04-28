@@ -231,3 +231,57 @@ class WhoAmIView(APIView):
                 },
             }
         )
+
+
+class DirectAuthView(APIView):
+    """
+    POST /auth/token
+    Accepts a GitHub access token directly and returns our JWT tokens.
+    Used for programmatic/API-based authentication (CLI, testing).
+    """
+
+    def post(self, request):
+        if check_rate_limit(request, "auth", 10):
+            return Response(
+                {"status": "error", "message": "Too many requests"},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        github_token = request.data.get("github_token") or request.data.get(
+            "access_token"
+        )
+
+        if not github_token:
+            return Response(
+                {"status": "error", "message": "github_token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        github_user_data, error = get_github_user(github_token)
+        if error:
+            return Response(
+                {"status": "error", "message": error},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user = get_or_create_user(github_user_data)
+
+        if not user.is_active:
+            return Response(
+                {"status": "error", "message": "Account is inactive"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return Response(
+            {
+                "status": "success",
+                "access_token": generate_access_token(user),
+                "refresh_token": generate_refresh_token(user),
+                "token_type": "Bearer",
+                "user": {
+                    "id": str(user.id),
+                    "username": user.username,
+                    "role": user.role,
+                },
+            }
+        )
