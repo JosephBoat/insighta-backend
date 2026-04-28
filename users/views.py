@@ -3,6 +3,7 @@ import base64
 from django.conf import settings
 from django.shortcuts import redirect
 from django.utils import timezone
+from django.core.cache import cache
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -11,12 +12,6 @@ from .models import RefreshToken
 from .tokens import generate_access_token, generate_refresh_token
 from .auth_service import exchange_code_for_token, get_github_user, get_or_create_user
 from .middleware import get_user_from_request
-from django_ratelimit.decorators import ratelimit
-from django.utils.decorators import method_decorator
-
-from django.core.cache import cache
-from django.http import JsonResponse
-import time
 
 
 def check_rate_limit(request, key_prefix, limit, window=60):
@@ -27,20 +22,20 @@ def check_rate_limit(request, key_prefix, limit, window=60):
     ip = request.META.get(
         "HTTP_X_FORWARDED_FOR", request.META.get("REMOTE_ADDR", "unknown")
     )
+    if "," in str(ip):
+        ip = ip.split(",")[0].strip()
     cache_key = f"ratelimit:{key_prefix}:{ip}"
-
     requests_made = cache.get(cache_key, 0)
     if requests_made >= limit:
         return True
-
     cache.set(cache_key, requests_made + 1, window)
     return False
 
 
-@method_decorator(ratelimit(key="ip", rate="10/m", block=True), name="get")
 class GithubLoginView(APIView):
+    """GET /auth/github — redirect to GitHub OAuth"""
+
     def get(self, request):
-        # Rate limit: 10 requests per minute
         if check_rate_limit(request, "auth", 10):
             return Response(
                 {"status": "error", "message": "Too many requests"},
@@ -69,27 +64,21 @@ class GithubLoginView(APIView):
         return redirect(github_url)
 
 
-@method_decorator(ratelimit(key="ip", rate="10/m", block=True), name="get")
 class GithubCallbackView(APIView):
-    """
-    GET /auth/github/callback
-    Handles OAuth callback from GitHub.
-    Validates state and PKCE before exchanging code.
-    """
-
-    if check_rate_limit(request, "auth", 10):
-        return Response(
-            {"status": "error", "message": "Too many requests"},
-            status=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
+    """GET /auth/github/callback — handle OAuth callback"""
 
     def get(self, request):
+        if check_rate_limit(request, "auth", 10):
+            return Response(
+                {"status": "error", "message": "Too many requests"},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         code = request.query_params.get("code")
         state = request.query_params.get("state")
         code_verifier = request.query_params.get("code_verifier")
         is_cli = request.query_params.get("cli") == "true"
 
-        # Validate required parameters
         if not code:
             return Response(
                 {"status": "error", "message": "No code provided"},
@@ -102,7 +91,6 @@ class GithubCallbackView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Exchange code for GitHub token
         github_token, error = exchange_code_for_token(code, code_verifier)
         if error:
             return Response(
@@ -110,7 +98,6 @@ class GithubCallbackView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Get user info from GitHub
         github_user_data, error = get_github_user(github_token)
         if error:
             return Response(
@@ -118,7 +105,6 @@ class GithubCallbackView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Create or update user in our DB
         user = get_or_create_user(github_user_data)
 
         if not user.is_active:
@@ -127,13 +113,11 @@ class GithubCallbackView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Issue our own tokens
         tokens = {
             "access_token": generate_access_token(user),
             "refresh_token": generate_refresh_token(user),
         }
 
-        # CLI flow — return JSON directly
         if is_cli:
             return Response(
                 {
@@ -144,7 +128,6 @@ class GithubCallbackView(APIView):
                 }
             )
 
-        # Web flow — redirect to frontend with tokens
         frontend_url = (
             f"{settings.FRONTEND_URL}/index.html"
             f"?access_token={tokens['access_token']}"
@@ -153,21 +136,16 @@ class GithubCallbackView(APIView):
         return redirect(frontend_url)
 
 
-@method_decorator(ratelimit(key="ip", rate="10/m", block=True), name="post")
 class RefreshTokenView(APIView):
-    """
-    POST /auth/refresh
-    Exchange a refresh token for a new access + refresh token pair.
-    The old refresh token is immediately invalidated (token rotation).
-    """
-
-    if check_rate_limit(request, "auth", 10):
-        return Response(
-            {"status": "error", "message": "Too many requests"},
-            status=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
+    """POST /auth/refresh — exchange refresh token for new pair"""
 
     def post(self, request):
+        if check_rate_limit(request, "auth", 10):
+            return Response(
+                {"status": "error", "message": "Too many requests"},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         refresh_token_value = request.data.get("refresh_token")
 
         if not refresh_token_value:
@@ -186,7 +164,6 @@ class RefreshTokenView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Check expiry
         if token_obj.expires_at < timezone.now():
             token_obj.delete()
             return Response(
@@ -202,10 +179,8 @@ class RefreshTokenView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Invalidate old token immediately (token rotation)
         token_obj.delete()
 
-        # Issue new token pair
         return Response(
             {
                 "status": "success",
@@ -216,11 +191,7 @@ class RefreshTokenView(APIView):
 
 
 class LogoutView(APIView):
-    """
-    POST /auth/logout
-    Invalidates the refresh token server-side.
-    Requires refresh_token in body.
-    """
+    """POST /auth/logout — invalidate refresh token"""
 
     def post(self, request):
         refresh_token_value = request.data.get("refresh_token")
@@ -231,17 +202,13 @@ class LogoutView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        deleted, _ = RefreshToken.objects.filter(token=refresh_token_value).delete()
+        RefreshToken.objects.filter(token=refresh_token_value).delete()
 
         return Response({"status": "success", "message": "Logged out successfully"})
 
 
 class WhoAmIView(APIView):
-    """ "
-    GET /auth/whoami
-    Returns the currently authenticated user's info.
-    Used by the CLI's `insighta whoami` command.
-    """
+    """GET /auth/whoami and GET /api/users/me — return current user"""
 
     def get(self, request):
         user, error = get_user_from_request(request)
