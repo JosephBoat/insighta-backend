@@ -44,11 +44,15 @@ def check_rate_limit(request, key_prefix, limit, window=60):
 def user_payload(user):
     return {
         "id": str(user.id),
+        "github_id": user.github_id,
         "username": user.username,
+        "name": user.username,
         "email": user.email,
         "avatar_url": user.avatar_url,
         "role": user.role,
+        "is_active": user.is_active,
         "created_at": user.created_at,
+        "last_login_at": user.last_login_at,
     }
 
 
