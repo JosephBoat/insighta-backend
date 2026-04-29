@@ -37,6 +37,23 @@ def build_pagination_response(request, queryset, serializer_class):
             params += f"&{base_query}"
         return f"{base_path}?{params}"
 
+    links = {
+        "self": build_link(page),
+        "next": build_link(page + 1) if page < total_pages else None,
+        "prev": build_link(page - 1) if page > 1 else None,
+    }
+    pagination = {
+        "page": page,
+        "limit": limit,
+        "per_page": limit,
+        "total": total,
+        "total_items": total,
+        "total_pages": total_pages,
+        "pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+    }
+
     return Response(
         {
             "status": "success",
@@ -44,11 +61,9 @@ def build_pagination_response(request, queryset, serializer_class):
             "limit": limit,
             "total": total,
             "total_pages": total_pages,
-            "links": {
-                "self": build_link(page),
-                "next": build_link(page + 1) if page < total_pages else None,
-                "prev": build_link(page - 1) if page > 1 else None,
-            },
+            "pagination": pagination,
+            "meta": {"pagination": pagination},
+            "links": links,
             "data": serializer.data,
         }
     )

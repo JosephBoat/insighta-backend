@@ -5,30 +5,36 @@ from .models import User
 from .tokens import generate_access_token, generate_refresh_token
 
 
-def exchange_code_for_token(code: str, code_verifier: str = None) -> tuple:
+def exchange_code_for_token(
+    code: str, code_verifier: str = None, redirect_uri: str = None
+) -> tuple:
     payload = {
         "client_id": settings.GITHUB_CLIENT_ID,
         "client_secret": settings.GITHUB_CLIENT_SECRET,
         "code": code,
-        "redirect_uri": settings.GITHUB_REDIRECT_URI,
+        "redirect_uri": redirect_uri or settings.GITHUB_REDIRECT_URI,
     }
     if code_verifier:
         payload["code_verifier"] = code_verifier
 
     response = requests.post(
         "https://github.com/login/oauth/access_token",
-        json=payload,
+        data=payload,
         headers={"Accept": "application/json"},
         timeout=10,
     )
 
-    print("GitHub response status:", response.status_code)
-    print("GitHub response body:", response.json())
-
     if response.status_code != 200:
         return None, "Failed to exchange code with GitHub"
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        return None, "Invalid response from GitHub"
+
+    if data.get("error"):
+        return None, data.get("error_description") or data["error"]
+
     token = data.get("access_token")
 
     if not token:
@@ -75,7 +81,9 @@ def get_or_create_user(github_user_data: dict) -> User:
             "username": github_user_data["username"],
             "email": github_user_data["email"],
             "avatar_url": github_user_data["avatar_url"],
-            "role": "admin" if User.objects.count() == 0 else "analyst",
+            "role": "admin"
+            if not User.objects.filter(role="admin").exists()
+            else "analyst",
         },
     )
 

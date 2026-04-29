@@ -1,9 +1,23 @@
 import time
 import logging
+import secrets
 from .tokens import validate_access_token
 from .models import User
 
 logger = logging.getLogger(__name__)
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def csrf_token_is_valid(request) -> bool:
+    cookie_token = request.COOKIES.get("csrf_token")
+    header_token = request.headers.get("X-CSRF-Token") or request.headers.get(
+        "X-CSRFToken"
+    )
+    return bool(
+        cookie_token
+        and header_token
+        and secrets.compare_digest(str(cookie_token), str(header_token))
+    )
 
 
 class RequestLoggingMiddleware:
@@ -35,11 +49,22 @@ def get_user_from_request(request):
     Returns (user, error_message) — one will always be None.
     """
     auth_header = request.headers.get("Authorization", "")
+    token = None
+    used_cookie = False
 
-    if not auth_header.startswith("Bearer "):
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+    else:
+        token = request.COOKIES.get("access_token")
+        used_cookie = bool(token)
+
+    if not token:
         return None, "Authentication required"
 
-    token = auth_header.split(" ")[1]
+    if used_cookie and request.method not in SAFE_METHODS:
+        if not csrf_token_is_valid(request):
+            return None, "CSRF token missing or invalid"
+
     payload = validate_access_token(token)
 
     if not payload:

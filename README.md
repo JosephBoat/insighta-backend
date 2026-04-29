@@ -42,7 +42,8 @@ Fly.io (Django API)
 6. Backend fetches user info from GitHub API
 7. Backend creates/updates user in DB
 8. Backend issues access token (3min) + refresh token (5min)
-9. Client stores tokens and uses `Authorization: Bearer <token>`
+9. CLI/API clients receive JSON tokens and use `Authorization: Bearer <token>`
+10. Browser clients receive HTTP-only cookies plus a readable CSRF cookie
 
 ### PKCE Flow (CLI)
 The CLI generates a `code_verifier` (random secret) and `code_challenge` (SHA256 hash of verifier). The challenge is sent to GitHub. When exchanging the code, the verifier is sent to prove the same client initiated the flow.
@@ -54,6 +55,8 @@ The CLI generates a `code_verifier` (random secret) and `code_challenge` (SHA256
 
 ---
 
+Web portal cookies use HTTP-only `access_token` and `refresh_token` values; unsafe cookie-authenticated requests must send `X-CSRF-Token`.
+
 ## Role Enforcement
 
 | Role | Permissions |
@@ -63,10 +66,10 @@ The CLI generates a `code_verifier` (random secret) and `code_challenge` (SHA256
 
 All `/api/*` endpoints require:
 1. Valid `Authorization: Bearer <token>` header
-2. `X-API-Version: 1` header
+2. `X-API-Version: 1` header, or use the `/api/v1/*` route aliases
 3. Appropriate role for the operation
 
-The first user to log in is automatically assigned `admin`. All subsequent users get `analyst`.
+The first user to log in is automatically assigned `admin` when no admin exists. All subsequent users get `analyst`.
 
 ---
 

@@ -57,7 +57,9 @@ def require_api_version(func):
 
     def wrapper(self, request, *args, **kwargs):
         api_version = request.headers.get("X-API-Version")
-        if not api_version:
+        if request.path.startswith("/api/v1/"):
+            return func(self, request, *args, **kwargs)
+        if api_version != "1":
             return Response(
                 {"status": "error", "message": "API version header required"},
                 status=status.HTTP_400_BAD_REQUEST,
