@@ -95,14 +95,14 @@ Stage 4 adds:
 >
 > ```mermaid
 > flowchart TD
->   Web[Web portal\nGitHub Pages] --> Edge[Fly.io edge / TLS]
->   CLI[CLI\n~/.insighta/] --> Edge
->   Edge --> App1[Django app\nmachine 1]
->   Edge --> App2[Django app\nmachine 2]
->   App1 --> Redis[(Redis\nquery cache)]
->   App2 --> Redis
->   App1 --> PG[(Postgres / Neon\n+ pgbouncer)]
->   App2 --> PG
+>     Web["Web portal<br/>GitHub Pages"] --> Edge["Fly.io edge / TLS"]
+>     CLI["CLI<br/>~/.insighta/"] --> Edge
+>     Edge --> App1["Django app<br/>machine 1"]
+>     Edge --> App2["Django app<br/>machine 2"]
+>     App1 --> Redis[("Redis<br/>query cache")]
+>     App2 --> Redis
+>     App1 --> PG[("Postgres / Neon<br/>+ pgbouncer")]
+>     App2 --> PG
 > ```
 
 ### 2.2 Components
