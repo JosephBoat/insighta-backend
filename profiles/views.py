@@ -11,12 +11,15 @@ from .services import fetch_profile_data
 from .filters import apply_filters, apply_sorting, apply_pagination
 from .parser import parse_query
 from .permissions import require_auth, require_admin, require_api_version
+from .query_cache import build_cache_key, get_cached, set_cached, bump_version
 
 from django_ratelimit.decorators import ratelimit
 from django.utils.decorators import method_decorator
 
 
-def build_pagination_response(request, queryset, serializer_class):
+def build_pagination_payload(request, queryset, serializer_class):
+    """Build a paginated response dict (without wrapping in Response).
+    Split out from build_pagination_response so we can cache the dict."""
     paginated, page, limit, total = apply_pagination(queryset, request.query_params)
     serializer = serializer_class(paginated, many=True)
 
@@ -54,19 +57,38 @@ def build_pagination_response(request, queryset, serializer_class):
         "has_prev": page > 1,
     }
 
-    return Response(
-        {
-            "status": "success",
-            "page": page,
-            "limit": limit,
-            "total": total,
-            "total_pages": total_pages,
-            "pagination": pagination,
-            "meta": {"pagination": pagination},
-            "links": links,
-            "data": serializer.data,
-        }
-    )
+    return {
+        "status": "success",
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages,
+        "pagination": pagination,
+        "meta": {"pagination": pagination},
+        "links": links,
+        "data": list(serializer.data),
+    }
+
+
+def build_pagination_response(request, queryset, serializer_class):
+    """Backward-compatible wrapper that returns a DRF Response."""
+    return Response(build_pagination_payload(request, queryset, serializer_class))
+
+
+def _cached_response_or_build(request, cache_key, build_payload):
+    """
+    Read-through cache helper: return a Response from cache if present,
+    otherwise call build_payload(), cache the resulting payload, and return.
+    `build_payload` returns a JSON-serializable dict (the body).
+    """
+    cached = get_cached(cache_key)
+    if cached is not None:
+        cached = {**cached, "cached": True}
+        return Response(cached)
+
+    payload = build_payload()
+    set_cached(cache_key, payload)
+    return Response({**payload, "cached": False})
 
 
 class ProfileListCreateView(APIView):
@@ -74,11 +96,17 @@ class ProfileListCreateView(APIView):
     @require_api_version
     @require_auth
     def get(self, request):
-        """GET /api/profiles — all profiles with filtering, sorting, pagination"""
-        queryset = Profile.objects.all()
-        queryset = apply_filters(queryset, request.query_params)
-        queryset = apply_sorting(queryset, request.query_params)
-        return build_pagination_response(request, queryset, ProfileListSerializer)
+        """GET /api/profiles — all profiles with filtering, sorting, pagination.
+        Read-through cache: identical normalized queries hit Redis/LocMem."""
+        cache_key = build_cache_key(request.query_params, scope="list")
+
+        def build():
+            queryset = Profile.objects.all()
+            queryset = apply_filters(queryset, request.query_params)
+            queryset = apply_sorting(queryset, request.query_params)
+            return build_pagination_payload(request, queryset, ProfileListSerializer)
+
+        return _cached_response_or_build(request, cache_key, build)
 
     @require_api_version
     @require_admin
@@ -120,6 +148,8 @@ class ProfileListCreateView(APIView):
             )
 
         profile = Profile.objects.create(name=name, **api_data)
+        # Invalidate every cached list/search response — the dataset changed.
+        bump_version()
         serializer = ProfileSerializer(profile)
         return Response(
             {
@@ -158,6 +188,7 @@ class ProfileDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         profile.delete()
+        bump_version()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -166,7 +197,13 @@ class ProfileSearchView(APIView):
     @require_api_version
     @require_auth
     def get(self, request):
-        """GET /api/profiles/search?q=..."""
+        """GET /api/profiles/search?q=...
+
+        The cache key is built from the *parsed and normalized filter dict*,
+        not the raw query string. This means two queries that produce the
+        same filters — "Nigerian women 20-45" vs "women aged 20-45 from
+        Nigeria" — share a cache entry, even though their raw strings differ.
+        """
         q = request.query_params.get("q", "").strip()
 
         if not q:
@@ -182,10 +219,66 @@ class ProfileSearchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        queryset = Profile.objects.all()
-        queryset = apply_filters(queryset, filters)
-        queryset = apply_sorting(queryset, request.query_params)
-        return build_pagination_response(request, queryset, ProfileListSerializer)
+        # Merge parsed filters with sort/page from the raw request.
+        cache_input = {
+            **filters,
+            "sort_by": request.query_params.get("sort_by"),
+            "order": request.query_params.get("order"),
+            "page": request.query_params.get("page"),
+            "limit": request.query_params.get("limit"),
+        }
+        cache_key = build_cache_key(cache_input, scope="search")
+
+        def build():
+            queryset = Profile.objects.all()
+            queryset = apply_filters(queryset, filters)
+            queryset = apply_sorting(queryset, request.query_params)
+            return build_pagination_payload(request, queryset, ProfileListSerializer)
+
+        return _cached_response_or_build(request, cache_key, build)
+
+
+class ProfileImportView(APIView):
+    """
+    POST /api/profiles/import — bulk CSV upload (admin only).
+
+    Accepts a multipart upload with the file under the form field `file`.
+    Streams the CSV row-by-row, validates each row, batches valid rows for
+    bulk insert, and reports a summary. Bad rows are skipped, never fatal.
+    Already-inserted rows from a partial run remain in the DB.
+    """
+
+    @require_api_version
+    @require_admin
+    def post(self, request):
+        from .ingestion import ingest_csv
+
+        upload = request.FILES.get("file") or request.FILES.get("csv")
+        if upload is None:
+            return Response(
+                {"status": "error", "message": "Upload a CSV under form field 'file'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            summary = ingest_csv(upload)
+        except Exception as exc:
+            # An unexpected error mid-stream — already-committed batches
+            # remain in the DB per the partial-failure rule.
+            return Response(
+                {
+                    "status": "error",
+                    "message": f"Ingestion aborted: {exc}",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        http_status = (
+            status.HTTP_200_OK
+            if summary.get("status") == "success"
+            else status.HTTP_400_BAD_REQUEST
+        )
+        return Response(summary, status=http_status)
 
 
 class ProfileExportView(APIView):

@@ -9,6 +9,12 @@ def apply_filters(queryset, params: dict):
     """
     Apply all supported filters to a queryset.
     Each filter is optional — only applied if the parameter is present.
+
+    Values are normalized to the canonical storage form (gender/age_group
+    lowercase, country_id uppercase) so we can use case-sensitive `__exact`
+    lookups, which can use the btree indexes on those columns. Switching
+    away from `__iexact` is the single biggest query-performance win at
+    scale, because `__iexact` (ILIKE) cannot use a plain btree index.
     """
     gender = params.get("gender")
     age_group = params.get("age_group")
@@ -19,11 +25,11 @@ def apply_filters(queryset, params: dict):
     min_country_probability = params.get("min_country_probability")
 
     if gender:
-        queryset = queryset.filter(gender__iexact=gender)
+        queryset = queryset.filter(gender=str(gender).strip().lower())
     if age_group:
-        queryset = queryset.filter(age_group__iexact=age_group)
+        queryset = queryset.filter(age_group=str(age_group).strip().lower())
     if country_id:
-        queryset = queryset.filter(country_id__iexact=country_id)
+        queryset = queryset.filter(country_id=str(country_id).strip().upper())
     if min_age:
         queryset = queryset.filter(age__gte=int(min_age))
     if max_age:

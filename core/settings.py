@@ -91,9 +91,40 @@ REFRESH_TOKEN_EXPIRY_MINUTES = 5
 # Frontend URL
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
-        "LOCATION": "cache_table",
+REDIS_URL = os.getenv("REDIS_URL")
+
+if REDIS_URL:
+    # Production: shared cache across all app machines.
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": 60,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django.core.cache.backends.redis.RedisCacheClient",
+            },
+        },
+        # Rate limiting still needs a counter that can't be lost on restart.
+        # Keep the existing DB cache for that one purpose.
+        "ratelimit": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "cache_table",
+        },
     }
-}
+else:
+    # Local / no-Redis fallback. LocMemCache is per-process so each Fly
+    # machine has its own; that's fine — the worst case is a per-machine
+    # cache miss, never a correctness problem. Rate limiting still uses
+    # the DB cache because LocMemCache wouldn't be shared across machines.
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "insighta-default",
+            "TIMEOUT": 60,
+            "OPTIONS": {"MAX_ENTRIES": 5000},
+        },
+        "ratelimit": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "cache_table",
+        },
+    }

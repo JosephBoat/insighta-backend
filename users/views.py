@@ -3,7 +3,12 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.shortcuts import redirect
 from django.utils import timezone
-from django.core.cache import cache
+from django.core.cache import caches
+
+# Rate limiting must persist across machine restarts and be shared between
+# Fly machines, so it uses the dedicated DB-backed "ratelimit" cache rather
+# than the in-process default cache used for query results.
+cache = caches["ratelimit"]
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
