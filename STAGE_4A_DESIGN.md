@@ -1,16 +1,11 @@
 # Insighta Labs+ — Stage 4A Design Document
 
-**Author:** Joseph Boateng
-**Date:** 2026-05-05
+**Author:** Joseph Boateng </br>
+**Date:** 2026-05-05 </br>
 **Scope:** Scaling the existing Insighta Labs+ system to handle tens of
 millions of profiles, hundreds-to-low-thousands of queries per minute, and
 multi-team daily use, while preserving the Stage 3 contract.
 
-> **Submission instructions for Joseph:** Paste this content into a Google
-> Doc, embed the diagram from the Mermaid block as an image (or remake it
-> in [excalidraw.com](https://excalidraw.com) and screenshot — both work),
-> and set sharing to "Anyone with the link can view" before submitting.
-> Length is under 7 pages as required.
 
 ---
 
@@ -90,8 +85,6 @@ Stage 4 adds:
 └─────────────────────┘                              └──────────────────────┘
 ```
 
-> Mermaid version (paste into any Mermaid renderer for the embedded image
-> in the Google Doc):
 >
 > ```mermaid
 > flowchart TD
